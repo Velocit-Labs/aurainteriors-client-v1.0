@@ -95,6 +95,8 @@ export const startChat = async (data) => {
 
 export const getMyChats = async ({ page = 1, limit = 20, status } = {}) => {
     const params = new URLSearchParams();
+    const guestSessionId = getGuestSessionId();
+    if (guestSessionId) params.append('guestSessionId', guestSessionId);
     params.append('page', page);
     params.append('limit', limit);
     if (status) params.append('status', status);
@@ -104,7 +106,10 @@ export const getMyChats = async ({ page = 1, limit = 20, status } = {}) => {
 };
 
 export const getChatDetails = async (chatId) => {
-    const response = await api.get(`/chats/${chatId}`);
+    const guestSessionId = getGuestSessionId();
+    const response = await api.get(`/chats/${chatId}`, {
+      params: guestSessionId ? { guestSessionId } : undefined,
+    });
     return response.data;
 };
 
@@ -137,7 +142,7 @@ export const markMessagesAsRead = async (chatId) => {
 };
 
 export const closeChat = async (chatId) => {
-    const response = await api.patch(`/chats/${chatId}/close`);
+    const response = await api.patch(`/chats/${chatId}/close`, addGuestSessionId());
     return response.data;
 };
 

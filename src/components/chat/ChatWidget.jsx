@@ -95,6 +95,7 @@ const ChatWidget = () => {
   };
 
   const handleStartNewChat = (initialMessage = null) => {
+    if (startChatMutation.isPending) return;
     startChatMutation.mutate(
       { subject: initialMessage || 'Support Request', metadata: { userAgent: navigator.userAgent } },
       {

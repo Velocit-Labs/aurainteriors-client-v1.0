@@ -51,101 +51,76 @@ export const useSendMessage = () => {
 
   return useMutation({
     mutationFn: chatApi.sendMessage,
-    // PERF-OPT 2: Optimistic update - show message immediately before server confirms
     onMutate: async (variables) => {
       const { chatId, content, attachments } = variables;
-
-      // Cancel any outgoing refetches so they don't overwrite our optimistic update
       await queryClient.cancelQueries({ queryKey: ['chats', chatId, 'messages'] });
-
-      // Snapshot the previous value
-      const previousData = queryClient.getQueryData(['chats', chatId, 'messages']);
-
-      // Create optimistic message object with already-uploaded attachments
+      const key = ['chats', chatId, 'messages'];
+      const previousData = queryClient.getQueryData(key);
       const optimisticMessage = {
-        _id: `optimistic-${Date.now()}`,
+        _id: `optimistic-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
         content,
         attachments: attachments || [],
         senderRole: 'customer',
-        sender: {
-          _id: 'current-user',
-          firstName: 'You',
-          role: 'customer',
-        },
-        messageType: attachments && attachments.length > 0 ? 'image' : 'text',
+        sender: { _id: 'current-user', firstName: 'You', role: 'customer' },
+        messageType: attachments?.length ? 'image' : 'text',
         createdAt: new Date().toISOString(),
-        deliveredAt: new Date().toISOString(),
+        deliveredAt: null,
         isRead: false,
         isPending: true,
       };
 
-      // Update the messages cache with optimistic message
-      queryClient.setQueryData(['chats', chatId, 'messages'], (old) => {
-        if (!old) return old;
-        return {
-          ...old,
-          pages: old.pages.map((page, idx) => {
-            if (idx === 0) {
-              return {
-                ...page,
-                data: {
-                  ...page.data,
-                  messages: [...(page.data?.messages || []), optimisticMessage],
-                },
-              };
-            }
-            return page;
-          }),
+      queryClient.setQueryData(key, (old) => {
+        // A first message can be sent before the initial history GET finishes. Seed
+        // the infinite-query cache so the bubble still appears immediately.
+        if (!old?.pages?.length) {
+          return {
+            pages: [{ data: { messages: [optimisticMessage], pagination: { page: 1, totalPages: 1, hasMore: false } } }],
+            pageParams: [1],
+          };
+        }
+        const pages = [...old.pages];
+        const target = pages.length - 1;
+        pages[target] = {
+          ...pages[target],
+          data: {
+            ...pages[target].data,
+            messages: [...(pages[target].data?.messages || []), optimisticMessage],
+          },
         };
+        return { ...old, pages };
       });
-
       return { previousData, optimisticMessage };
     },
     onSuccess: (data, variables, context) => {
-      const { chatId } = variables;
-      // Server confirmed the message - update optimistic message with real data from DB
-      // This ensures any blob URLs are replaced with real Cloudinary URLs
-      queryClient.setQueryData(['chats', chatId, 'messages'], (old) => {
-        if (!old) return old;
-        return {
-          ...old,
-          pages: old.pages.map((page, idx) => {
-            if (idx === 0) {
-              return {
-                ...page,
-                data: {
-                  ...page.data,
-                  messages: page.data.messages.map((msg) =>
-                    msg._id === context.optimisticMessage._id
-                      ? { 
-                          ...data.data.message, 
-                          isPending: false,
-                          // Ensure attachments use real URLs, clearing any blob markers
-                          attachments: (data.data.message.attachments || []).map(att => ({
-                            ...att,
-                            _localBlobUrl: undefined, // Clear blob marker
-                            _uploadStatus: 'complete',
-                          }))
-                        }
-                      : msg
-                  ),
-                },
-              };
-            }
-            return page;
-          }),
-        };
+      const key = ['chats', variables.chatId, 'messages'];
+      const confirmed = { ...data.data.message, isPending: false };
+      queryClient.setQueryData(key, (old) => {
+        if (!old?.pages?.length) return old;
+        let replaced = false;
+        let alreadyPresent = false;
+        const pages = old.pages.map((page) => ({
+          ...page,
+          data: {
+            ...page.data,
+            messages: (page.data?.messages || []).map((msg) => {
+              if (String(msg._id) === String(confirmed._id)) { alreadyPresent = true; return { ...msg, ...confirmed, isPending: false }; }
+              if (context?.optimisticMessage && msg._id === context.optimisticMessage._id) { replaced = true; return confirmed; }
+              return msg;
+            }),
+          },
+        }));
+        if (!replaced && !alreadyPresent) {
+          const target = pages.length - 1;
+          pages[target] = { ...pages[target], data: { ...pages[target].data, messages: [...(pages[target].data?.messages || []), confirmed] } };
+        }
+        return { ...old, pages };
       });
-
-      // Invalidate other queries to refresh chat lists
-      queryClient.invalidateQueries({ queryKey: ['chats', 'my'] });
-      queryClient.invalidateQueries({ queryKey: ['chats', 'admin', 'all'] });
+      queryClient.invalidateQueries({ queryKey: ['chats', 'my'], refetchType: 'none' });
+      queryClient.invalidateQueries({ queryKey: ['chats', 'admin', 'all'], refetchType: 'none' });
     },
     onError: (error, variables, context) => {
-      // Rollback to previous data on error
-      if (context?.previousData) {
-        queryClient.setQueryData(['chats', variables.chatId, 'messages'], context.previousData);
-      }
+      if (context?.previousData) queryClient.setQueryData(['chats', variables.chatId, 'messages'], context.previousData);
+      else queryClient.removeQueries({ queryKey: ['chats', variables.chatId, 'messages'], exact: true });
     },
   });
 };

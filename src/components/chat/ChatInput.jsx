@@ -2,11 +2,10 @@ import { useState, useRef, useEffect } from "react";
 import { LucideSendHorizontal, Paperclip, Smile, X, AlertCircle } from "lucide-react";
 import { AnimatePresence } from "framer-motion";
 import { useSendMessage } from "../../hooks/chat/useChatTan";
-import { getUploadSignature, uploadToCloudinary, updateMessageAttachments } from "../../api/chatApi";
+import { getUploadSignature, uploadToCloudinary } from "../../api/chatApi";
 import AuthRequiredModal from "./AuthRequiredModal";
 import RateLimitModal from "./RateLimitModal";
 import { toast } from "react-toastify";
-import { useQueryClient } from "@tanstack/react-query";
 
 const ChatInput = ({ chatId, onTyping }) => {
   const [message, setMessage] = useState("");
@@ -23,7 +22,6 @@ const ChatInput = ({ chatId, onTyping }) => {
   const sendMessageMutation = useSendMessage();
   const uploadCacheRef = useRef({}); // Cache Cloudinary credentials to avoid repeated fetches
   const blobUrlsRef = useRef({}); // Track blob URLs for cleanup
-  const queryClient = useQueryClient();
   
   // Cleanup blob URLs on unmount
   useEffect(() => {
@@ -47,48 +45,50 @@ const ChatInput = ({ chatId, onTyping }) => {
   };
 
   const handleSend = async () => {
-    if (!message.trim() && selectedFiles.length === 0) return;
+    const text = message.trim();
+    const files = [...selectedFiles];
+    if (!text && files.length === 0) return;
+
+    // Clear the composer immediately. The message cache is optimistic for text, so
+    // the input never feels blocked by a production round trip.
+    setMessage("");
+    setSelectedFiles([]);
+    onTyping(false);
+    if (textareaRef.current) textareaRef.current.style.height = "24px";
 
     try {
-      setIsUploading(true);
+      let attachments = [];
+      if (files.length > 0) {
+        setIsUploading(true);
+        if (!uploadCacheRef.current.signature) {
+          const signatureResponse = await getUploadSignature();
+          uploadCacheRef.current.signature = signatureResponse.data.signature;
+          setTimeout(() => { uploadCacheRef.current.signature = null; }, 50 * 60 * 1000);
+        }
+        const uploadConfig = uploadCacheRef.current.signature;
+        const results = await Promise.all(files.map(async (file) => {
+          const result = await uploadToCloudinary(file, uploadConfig, { maxRetries: 3, retryDelay: 1000 });
+          return {
+            fileName: file.name,
+            fileUrl: result.secure_url,
+            fileType: file.type.startsWith("image") ? "image" : "document",
+            fileSize: file.size,
+          };
+        }));
+        attachments = results;
+      }
 
-      // Create optimistic attachments with blob URLs
-      const optimisticAttachments = selectedFiles.map((file) => {
-        const blobUrl = URL.createObjectURL(file);
-        blobUrlsRef.current[file.name] = blobUrl;
-        
-        return {
-          fileName: file.name,
-          fileUrl: blobUrl,
-          _localBlobUrl: blobUrl,
-          fileType: file.type.startsWith("image") ? "image" : "document",
-          fileSize: file.size,
-          _uploadStatus: "uploading",
-        };
-      });
-
-      // Send optimistic message immediately (render before upload)
       sendMessageMutation.mutate(
-        { chatId, content: message.trim(), attachments: optimisticAttachments },
+        { chatId, content: text, attachments },
         {
-          onSuccess: () => {
-            setMessage("");
-            setSelectedFiles([]);
-            setUploadProgress({});
-            onTyping(false);
-            if (textareaRef.current) textareaRef.current.style.height = "24px";
-          },
           onError: (error) => {
+            // Restore text so a failed request never makes the user's input disappear.
+            if (text) setMessage(text);
             const response = error.response?.data;
-
             if (response?.code === "AUTH_REQUIRED") {
-              setAuthError({
-                message: response.message,
-                suggestion: response.suggestion,
-              });
+              setAuthError({ message: response.message, suggestion: response.suggestion });
               setShowAuthModal(true);
             }
-
             if (response?.code === "RATE_LIMIT_EXCEEDED") {
               setRateLimitRetry(response.retryAfter || 900);
               setShowRateLimitModal(true);
@@ -96,106 +96,16 @@ const ChatInput = ({ chatId, onTyping }) => {
           },
         }
       );
-
-      // NOW upload files to Cloudinary in BACKGROUND
-      // Don't wait - this allows UI to remain responsive
-      if (selectedFiles.length > 0) {
-        uploadFilesInBackground();
-      }
     } catch (error) {
-      console.error("❌ Error in handleSend:", error);
-      toast.error("Failed to send message");
-      setIsUploading(false);
+      console.error("Error sending chat message:", error);
+      if (text) setMessage(text);
+      if (files.length) setSelectedFiles(files);
+      toast.error(files.length ? "Attachment upload failed. Please try again." : "Failed to send message");
     } finally {
       setIsUploading(false);
     }
   };
 
-  // Separate function for background uploads
-  const uploadFilesInBackground = async () => {
-    try {
-      // Get upload signature
-      if (!uploadCacheRef.current.signature) {
-        try {
-          const signatureResponse = await getUploadSignature();
-          uploadCacheRef.current.signature = signatureResponse.data.signature;
-          setTimeout(() => {
-            uploadCacheRef.current.signature = null;
-          }, 50 * 60 * 1000);
-        } catch (sigError) {
-          console.error("Failed to get upload signature:", sigError);
-          return;
-        }
-      }
-      const uploadConfig = uploadCacheRef.current.signature;
-
-      console.log(`Uploading ${selectedFiles.length} file(s) to Cloudinary in background...`);
-
-      // Upload all files in parallel
-      const uploadPromises = selectedFiles.map(async (file) => {
-        try {
-          setUploadProgress(prev => ({ ...prev, [file.name]: { status: 'uploading', error: null } }));
-          
-          // Upload with compression and retry
-          const cloudinaryResult = await uploadToCloudinary(file, uploadConfig, {
-            maxRetries: 3,
-            retryDelay: 1000,
-          });
-          
-          setUploadProgress(prev => ({ ...prev, [file.name]: { status: 'complete', url: cloudinaryResult.secure_url } }));
-          
-          // Return the real attachment with Cloudinary URL
-          return {
-            fileName: file.name,
-            fileUrl: cloudinaryResult.secure_url,
-            fileType: file.type.startsWith("image") ? "image" : "document",
-            fileSize: file.size,
-            _uploadStatus: "complete",
-          };
-        } catch (error) {
-          console.error(`❌ Failed to upload ${file.name}:`, error);
-          setUploadProgress(prev => ({ ...prev, [file.name]: { status: 'failed', error: error.message } }));
-          return null;
-        }
-      });
-
-      // Wait for uploads to complete
-      const uploadedAttachments = (await Promise.all(uploadPromises)).filter(Boolean);
-      
-      console.log(`✓ Background upload complete. Uploaded: ${uploadedAttachments.length}/${selectedFiles.length}`);
-      
-      if (uploadedAttachments.length > 0) {
-        console.log(`✓ All ${uploadedAttachments.length} attachments have real Cloudinary URLs`);
-        
-        // Now sync the real URLs back to the database
-        // This replaces the temporary blob URLs with permanent Cloudinary URLs
-        try {
-          const lastMessage = await queryClient.getQueryData(['chats', chatId, 'messages']);
-          if (lastMessage?.pages?.[0]?.data?.messages?.length > 0) {
-            const mostRecentMessage = lastMessage.pages[0].data.messages[lastMessage.pages[0].data.messages.length - 1];
-            if (mostRecentMessage?._id) {
-              console.log(`📎 Syncing ${uploadedAttachments.length} real URLs to message ${mostRecentMessage._id}...`);
-              await updateMessageAttachments(chatId, mostRecentMessage._id, uploadedAttachments);
-              console.log(`✓ Message attachments updated in database with real Cloudinary URLs`);
-            }
-          }
-        } catch (syncError) {
-          console.error("❌ Failed to sync attachments to message:", syncError);
-          // Don't fail - message is visible with blob URLs, user can refresh to get real URLs
-          toast.warning("Images visible, but couldn't sync to database. Refresh to persist.");
-        }
-      }
-      
-      if (uploadedAttachments.length === 0 && selectedFiles.length > 0) {
-        console.error("❌ All uploads failed. Message saved with local previews.");
-        toast.error("Uploads failed. Message visible with preview images.");
-      } else if (uploadedAttachments.length < selectedFiles.length) {
-        console.warn(`⚠️  Partial upload: ${uploadedAttachments.length}/${selectedFiles.length} succeeded`);
-      }
-    } catch (e) {
-      console.error("❌ Error in background upload:", e);
-    }
-  };
 
   const canSend =
     (message.trim() || selectedFiles.length > 0) &&

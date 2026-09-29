@@ -77,7 +77,7 @@ const ChatMessage = ({ message, isOwnMessage, isAdminView = false }) => {
             <div className="w-10 h-10 rounded-full bg-slate-800 text-teal-400 border border-slate-700 flex items-center justify-center shrink-0">
               <Bot size={20} />
             </div>
-          ) : isGuest ? (
+          ) : (isGuest || (isOwnMessage && !message.sender?.avatar)) ? (
             <div className="w-10 h-10 rounded-full bg-gray-100 border border-gray-200 text-gray-500 flex items-center justify-center shrink-0">
               <User size={18} strokeWidth={1.5} />
             </div>

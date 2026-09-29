@@ -68,17 +68,26 @@ const useChatSocket = (socket, chatId) => {
           },
         }));
         if (!found) {
-          const last = pages.length - 1;
-          const list = pages[last].data?.messages || [];
-          // If the socket beats the POST response, replace the matching optimistic
-          // customer bubble rather than briefly rendering a duplicate.
-          const optimisticIndex = incoming.senderRole === 'customer'
-            ? list.findIndex((m) => String(m._id).startsWith('optimistic-') && m.content === incoming.content)
-            : -1;
-          const next = [...list];
-          if (optimisticIndex >= 0) next[optimisticIndex] = incoming;
-          else next.push(incoming);
-          pages[last] = { ...pages[last], data: { ...pages[last].data, messages: next } };
+          // Reconcile against every loaded page. Previously the optimistic bubble was
+          // inserted into one page while the socket searched another, leaving messages
+          // permanently "pending" in production.
+          let optimisticPage = -1;
+          let optimisticIndex = -1;
+          if (incoming.senderRole === 'customer') {
+            for (let i = 0; i < pages.length && optimisticIndex < 0; i += 1) {
+              const list = pages[i].data?.messages || [];
+              const idx = list.findIndex((m) => String(m._id).startsWith('optimistic-') && m.content === incoming.content);
+              if (idx >= 0) { optimisticPage = i; optimisticIndex = idx; }
+            }
+          }
+          if (optimisticIndex >= 0) {
+            const list = [...(pages[optimisticPage].data?.messages || [])];
+            list[optimisticIndex] = { ...incoming, isPending: false };
+            pages[optimisticPage] = { ...pages[optimisticPage], data: { ...pages[optimisticPage].data, messages: list } };
+          } else {
+            const target = pages.length - 1;
+            pages[target] = { ...pages[target], data: { ...pages[target].data, messages: [...(pages[target].data?.messages || []), incoming] } };
+          }
         }
         return { ...old, pages };
       });
@@ -89,12 +98,27 @@ const useChatSocket = (socket, chatId) => {
     };
 
     const handleMessagesRead = (data) => {
-      if (data.chatId === chatId) {
-        queryClient.invalidateQueries({ queryKey: ['chats', chatId, 'messages'] });
-        queryClient.invalidateQueries({ queryKey: ['chats', chatId] });
-        queryClient.invalidateQueries({ queryKey: ['chats', 'my'] });
-        queryClient.invalidateQueries({ queryKey: ['chats', 'admin', 'all'] });
-      }
+      if (data.chatId?.toString() !== chatId?.toString()) return;
+      // A read receipt is metadata, not a reason to redownload the conversation.
+      queryClient.setQueryData(['chats', chatId, 'messages'], (old) => {
+        if (!old?.pages) return old;
+        const roleRead = data.userRole === 'admin' ? 'customer' : data.userRole === 'customer' ? 'admin' : null;
+        if (!roleRead) return old;
+        return {
+          ...old,
+          pages: old.pages.map((page) => ({
+            ...page,
+            data: {
+              ...page.data,
+              messages: (page.data?.messages || []).map((m) =>
+                m.senderRole === roleRead ? { ...m, isRead: true, readAt: m.readAt || new Date().toISOString() } : m
+              ),
+            },
+          })),
+        };
+      });
+      queryClient.invalidateQueries({ queryKey: ['chats', chatId], refetchType: 'none' });
+      queryClient.invalidateQueries({ queryKey: ['chats', 'my'], refetchType: 'none' });
     };
 
     const handleChatClosed = (data) => {
