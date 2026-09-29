@@ -26,7 +26,7 @@ export const getUploadSignature = async () => {
  * - Returns immediately with public URL on success
  */
 export const uploadToCloudinary = async (file, uploadConfig, options = {}) => {
-  const { maxRetries = 3, retryDelay = 1000 } = options;
+  const { maxRetries = 1, timeoutMs = 8000 } = options;
 
   // Compress image if applicable (reduces bandwidth significantly)
   const fileToUpload = await compressFileIfNeeded(file);
@@ -43,13 +43,17 @@ export const uploadToCloudinary = async (file, uploadConfig, options = {}) => {
       formData.append('upload_preset', uploadConfig.uploadPreset);
       formData.append('folder', uploadConfig.folder);
 
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
       const response = await fetch(uploadUrl, {
         method: 'POST',
+        signal: controller.signal,
         body: formData,
         // Note: keepalive not supported with multipart/form-data in all browsers
         // Browser handles connection reuse automatically via HTTP/2
       });
 
+      clearTimeout(timeoutId);
       if (!response.ok) {
         let errorMessage = response.statusText;
         try {
@@ -75,11 +79,7 @@ export const uploadToCloudinary = async (file, uploadConfig, options = {}) => {
         error.message
       );
 
-      // Exponential backoff: 1s, 2s, 4s, etc.
-      if (attempt < maxRetries - 1) {
-        const delayMs = retryDelay * Math.pow(2, attempt);
-        await new Promise((resolve) => setTimeout(resolve, delayMs));
-      }
+
     }
   }
 

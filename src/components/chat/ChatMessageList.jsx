@@ -16,6 +16,7 @@ const ChatMessageList = ({
   streamingMessage,
   isAdminView = false,
   typingStatus,
+  aiStillWorking = false,
 }) => {
   const { user } = useAuthStore();
   const messagesEndRef = useRef(null);
@@ -173,7 +174,11 @@ const ChatMessageList = ({
         );
       })}
 
-      {/* FIX 2: Streaming message bubble — renders as tokens arrive, disappears when real message loads */}
+      {aiStillWorking && !streamingMessage && (
+        <div className="px-4 text-xs text-neutral-500">Assistant response is being reconciled…</div>
+      )}
+
+            {/* FIX 2: Streaming message bubble — renders as tokens arrive, disappears when real message loads */}
       {streamingMessage && (
         <div className="flex w-full mb-3 px-1 justify-start">
           <div className="flex max-w-full gap-3 flex-row items-start">

@@ -36,7 +36,7 @@ const ChatInput = ({ chatId, onTyping }) => {
     setMessage(value);
     onTyping(true);
     if (typingTimeoutRef.current) clearTimeout(typingTimeoutRef.current);
-    typingTimeoutRef.current = setTimeout(() => onTyping(false), 1000);
+    typingTimeoutRef.current = setTimeout(() => onTyping(false), 300);
   };
 
   const handleFileSelect = async (files) => {

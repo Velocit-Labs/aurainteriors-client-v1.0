@@ -7,8 +7,7 @@ import { useQueryClient } from '@tanstack/react-query';
  * Manages all real-time socket events for a chat session.
  *
  * FIX 1: Typing indicator is now event-driven (ai:thinking_start / ai:thinking_stop /
- *         ai:error) — NOT a client-side setTimeout. A 10-second safety timer shows a
- *         "still working…" message if the AI hasn't responded yet.
+ *         ai:error) — NOT a client-side setTimeout. A one-second recovery deadline reconciles persisted messages and clears stale typing.
  *
  * FIX 2: Listens for ai:token / ai:complete events and builds a `streamingMessage`
  *         state that the UI renders progressively, giving a streaming text effect.
@@ -22,24 +21,30 @@ const useChatSocket = (socket, chatId) => {
   // FIX 2: Token-by-token streaming message buffer
   const [streamingMessage, setStreamingMessage] = useState('');
 
-  // FIX 1: True when AI has been thinking for > 10 seconds without a response
+  // True when the one-second client recovery deadline is reached
   const [aiStillWorking, setAiStillWorking] = useState(false);
 
   // Refs for cleanup
   const humanTypingTimeoutRef = useRef(null); // fallback timer for human typing only
-  const aiStillWorkingTimerRef = useRef(null); // 10s safety timer for AI
+  const aiStillWorkingTimerRef = useRef(null); // one-second recovery timer for AI
 
   // Join / leave chat room
   useEffect(() => {
     if (!socket || !chatId) return;
 
     const roomChatId = chatId.toString();
-    socket.emit('chat:join', { chatId: roomChatId });
+    const joinAndReconcile = () => {
+      socket.emit('chat:join', { chatId: roomChatId });
+      queryClient.refetchQueries({ queryKey: ['chats', chatId, 'messages'], type: 'active' });
+    };
+    joinAndReconcile();
+    socket.on('connect', joinAndReconcile);
 
     return () => {
-      socket.emit('chat:leave', { chatId: roomChatId });
+      socket.off('connect', joinAndReconcile);
+      if (socket.connected) socket.emit('chat:leave', { chatId: roomChatId });
     };
-  }, [socket, chatId]);
+  }, [socket, chatId, queryClient]);
 
   // Socket event listeners
   useEffect(() => {
@@ -152,7 +157,7 @@ const useChatSocket = (socket, chatId) => {
         // Short fallback: if the human typing stop event is somehow missed, clear after 5s
         humanTypingTimeoutRef.current = setTimeout(() => {
           setTypingStatus({ isTyping: false, userRole: null });
-        }, 5000);
+        }, 1000);
       } else {
         if (humanTypingTimeoutRef.current) clearTimeout(humanTypingTimeoutRef.current);
       }
@@ -167,11 +172,13 @@ const useChatSocket = (socket, chatId) => {
       setStreamingMessage('');
       setAiStillWorking(false);
 
-      // 10-second safety: if we haven't gotten a response yet, show a softer label
+      // One-second hard recovery: reconcile persisted state and never leave typing stuck
       if (aiStillWorkingTimerRef.current) clearTimeout(aiStillWorkingTimerRef.current);
       aiStillWorkingTimerRef.current = setTimeout(() => {
         setAiStillWorking(true);
-      }, 10000);
+        setTypingStatus({ isTyping: false, userRole: null });
+        queryClient.refetchQueries({ queryKey: ['chats', chatId, 'messages'], type: 'active' });
+      }, 1000);
     };
 
     const handleAiThinkingStop = (data) => {
@@ -202,8 +209,8 @@ const useChatSocket = (socket, chatId) => {
     const handleAiComplete = (data) => {
       if (data.chatId?.toString() !== chatId?.toString()) return;
 
-      // Give the DB message time to arrive via handleNewMessage before clearing buffer
-      setTimeout(() => setStreamingMessage(''), 400);
+      setStreamingMessage('');
+      queryClient.refetchQueries({ queryKey: ['chats', chatId, 'messages'], type: 'active' });
       setTypingStatus({ isTyping: false, userRole: null });
       setAiStillWorking(false);
       if (aiStillWorkingTimerRef.current) clearTimeout(aiStillWorkingTimerRef.current);

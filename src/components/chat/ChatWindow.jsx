@@ -108,6 +108,7 @@ const ChatWindow = ({ chat, onClose, onStartNew, onResetView, isCreatingChat }) 
                   currentUserId={user?._id}
                   streamingMessage={streamingMessage}
                   typingStatus={typingStatus}
+                  aiStillWorking={aiStillWorking}
                 />
               )}
             </div>
