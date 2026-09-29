@@ -47,13 +47,45 @@ const useChatSocket = (socket, chatId) => {
 
     // ----- Standard message events -----
 
-    const handleNewMessage = () => {
-      // When a new DB message arrives, clear any active streaming buffer
-      // (the real message replaces the optimistic streaming bubble)
+    const handleNewMessage = (data) => {
+      if (data?.chatId?.toString() !== chatId?.toString() || !data?.message) return;
       setStreamingMessage('');
-      queryClient.refetchQueries({ queryKey: ['chats', chatId, 'messages'] });
-      queryClient.invalidateQueries({ queryKey: ['chats', 'my'] });
-      queryClient.invalidateQueries({ queryKey: ['chats', 'admin', 'all'] });
+
+      // Socket payload is already the canonical populated DB message. Merge it into
+      // React Query instead of downloading the entire conversation again.
+      queryClient.setQueryData(['chats', chatId, 'messages'], (old) => {
+        if (!old?.pages?.length) return old;
+        const incoming = data.message;
+        let found = false;
+        const pages = old.pages.map((page) => ({
+          ...page,
+          data: {
+            ...page.data,
+            messages: (page.data?.messages || []).map((m) => {
+              if (m._id === incoming._id) { found = true; return incoming; }
+              return m;
+            }),
+          },
+        }));
+        if (!found) {
+          const last = pages.length - 1;
+          const list = pages[last].data?.messages || [];
+          // If the socket beats the POST response, replace the matching optimistic
+          // customer bubble rather than briefly rendering a duplicate.
+          const optimisticIndex = incoming.senderRole === 'customer'
+            ? list.findIndex((m) => String(m._id).startsWith('optimistic-') && m.content === incoming.content)
+            : -1;
+          const next = [...list];
+          if (optimisticIndex >= 0) next[optimisticIndex] = incoming;
+          else next.push(incoming);
+          pages[last] = { ...pages[last], data: { ...pages[last].data, messages: next } };
+        }
+        return { ...old, pages };
+      });
+
+      // Lists are secondary UI; mark stale without forcing the open conversation to refetch.
+      queryClient.invalidateQueries({ queryKey: ['chats', 'my'], refetchType: 'none' });
+      queryClient.invalidateQueries({ queryKey: ['chats', 'admin', 'all'], refetchType: 'none' });
     };
 
     const handleMessagesRead = (data) => {

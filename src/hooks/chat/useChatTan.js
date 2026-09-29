@@ -156,10 +156,10 @@ export const useMarkMessagesRead = () => {
   return useMutation({
     mutationFn: chatApi.markMessagesAsRead,
     onSuccess: (data, chatId) => {
-      queryClient.invalidateQueries({ queryKey: ['chats', chatId, 'messages'] });
-
-      queryClient.invalidateQueries({ queryKey: ['chats', chatId] });
-      queryClient.invalidateQueries({ queryKey: ['chats', 'my'] });
+      // Read receipts do not change message content. Avoid a full conversation
+      // refetch on every incoming message; socket events keep the UI current.
+      queryClient.invalidateQueries({ queryKey: ['chats', chatId], refetchType: 'none' });
+      queryClient.invalidateQueries({ queryKey: ['chats', 'my'], refetchType: 'none' });
     },
   });
 };
