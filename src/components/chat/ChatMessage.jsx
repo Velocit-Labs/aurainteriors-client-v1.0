@@ -116,10 +116,10 @@ const ChatMessage = ({ message, isOwnMessage, isAdminView = false }) => {
             <span className={`text-[13px] font-bold ${isBot ? 'text-emerald-600' : 'text-gray-900'}`}>
               {isBot
                 ? "AI Assistant"
+                : isOwnMessage
+                ? "You"
                 : isAdmin
-                ? "You"
-                : isGuest
-                ? "You"
+                ? message.sender?.firstName || "Admin"
                 : message.sender?.firstName || "Customer"}
             </span>
             <span className="text-[11px] text-gray-400 font-medium">

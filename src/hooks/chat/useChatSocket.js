@@ -9,8 +9,8 @@ import { useQueryClient } from '@tanstack/react-query';
  * FIX 1: Typing indicator is now event-driven (ai:thinking_start / ai:thinking_stop /
  *         ai:error) — NOT a client-side setTimeout. A one-second recovery deadline reconciles persisted messages and clears stale typing.
  *
- * FIX 2: Listens for ai:token / ai:complete events and builds a `streamingMessage`
- *         state that the UI renders progressively, giving a streaming text effect.
+ * AI output is rendered only from canonical persisted chat:message:new events.
+ * Token streaming is intentionally not rendered to prevent duplicate assistant messages.
  */
 const useChatSocket = (socket, chatId) => {
   const queryClient = useQueryClient();
@@ -18,15 +18,8 @@ const useChatSocket = (socket, chatId) => {
   // Human or AI typing indicator state
   const [typingStatus, setTypingStatus] = useState({ isTyping: false, userRole: null });
 
-  // FIX 2: Token-by-token streaming message buffer
-  const [streamingMessage, setStreamingMessage] = useState('');
-
-  // True when the one-second client recovery deadline is reached
-  const [aiStillWorking, setAiStillWorking] = useState(false);
-
   // Refs for cleanup
   const humanTypingTimeoutRef = useRef(null); // fallback timer for human typing only
-  const aiStillWorkingTimerRef = useRef(null); // one-second recovery timer for AI
 
   // Join / leave chat room
   useEffect(() => {
@@ -54,7 +47,6 @@ const useChatSocket = (socket, chatId) => {
 
     const handleNewMessage = (data) => {
       if (data?.chatId?.toString() !== chatId?.toString() || !data?.message) return;
-      setStreamingMessage('');
 
       // Socket payload is already the canonical populated DB message. Merge it into
       // React Query instead of downloading the entire conversation again.
@@ -81,7 +73,7 @@ const useChatSocket = (socket, chatId) => {
           if (incoming.senderRole === 'customer') {
             for (let i = 0; i < pages.length && optimisticIndex < 0; i += 1) {
               const list = pages[i].data?.messages || [];
-              const idx = list.findIndex((m) => String(m._id).startsWith('optimistic-') && m.content === incoming.content);
+              const idx = list.findIndex((m) => (incoming.clientMessageId && m.clientMessageId === incoming.clientMessageId) || (String(m._id).startsWith('optimistic-') && m.content === incoming.content));
               if (idx >= 0) { optimisticPage = i; optimisticIndex = idx; }
             }
           }
@@ -167,26 +159,13 @@ const useChatSocket = (socket, chatId) => {
 
     const handleAiThinkingStart = (data) => {
       if (data.chatId?.toString() !== chatId?.toString()) return;
-
       setTypingStatus({ isTyping: true, userRole: 'ai' });
-      setStreamingMessage('');
-      setAiStillWorking(false);
-
-      // One-second hard recovery: reconcile persisted state and never leave typing stuck
-      if (aiStillWorkingTimerRef.current) clearTimeout(aiStillWorkingTimerRef.current);
-      aiStillWorkingTimerRef.current = setTimeout(() => {
-        setAiStillWorking(true);
-        setTypingStatus({ isTyping: false, userRole: null });
-        queryClient.refetchQueries({ queryKey: ['chats', chatId, 'messages'], type: 'active' });
-      }, 1000);
     };
 
     const handleAiThinkingStop = (data) => {
       if (data.chatId?.toString() !== chatId?.toString()) return;
 
       setTypingStatus({ isTyping: false, userRole: null });
-      setAiStillWorking(false);
-      if (aiStillWorkingTimerRef.current) clearTimeout(aiStillWorkingTimerRef.current);
     };
 
     const handleAiError = (data) => {
@@ -194,27 +173,10 @@ const useChatSocket = (socket, chatId) => {
 
       // Always clear indicator on error so it's never stuck
       setTypingStatus({ isTyping: false, userRole: null });
-      setStreamingMessage('');
-      setAiStillWorking(false);
-      if (aiStillWorkingTimerRef.current) clearTimeout(aiStillWorkingTimerRef.current);
     };
 
-    // ----- FIX 2: Streaming token accumulation -----
-
-    const handleAiToken = (data) => {
-      if (data.chatId?.toString() !== chatId?.toString()) return;
-      setStreamingMessage((prev) => prev + data.token);
-    };
-
-    const handleAiComplete = (data) => {
-      if (data.chatId?.toString() !== chatId?.toString()) return;
-
-      setStreamingMessage('');
-      queryClient.refetchQueries({ queryKey: ['chats', chatId, 'messages'], type: 'active' });
-      setTypingStatus({ isTyping: false, userRole: null });
-      setAiStillWorking(false);
-      if (aiStillWorkingTimerRef.current) clearTimeout(aiStillWorkingTimerRef.current);
-    };
+    // AI tokens/completion are deliberately ignored by the customer UI.
+    // The single source of truth is the persisted chat:message:new event above.
 
     // Register all listeners
     socket.on('chat:message:new', handleNewMessage);
@@ -226,8 +188,6 @@ const useChatSocket = (socket, chatId) => {
     socket.on('ai:thinking_start', handleAiThinkingStart);
     socket.on('ai:thinking_stop', handleAiThinkingStop);
     socket.on('ai:error', handleAiError);
-    socket.on('ai:token', handleAiToken);
-    socket.on('ai:complete', handleAiComplete);
 
     return () => {
       socket.off('chat:message:new', handleNewMessage);
@@ -239,11 +199,8 @@ const useChatSocket = (socket, chatId) => {
       socket.off('ai:thinking_start', handleAiThinkingStart);
       socket.off('ai:thinking_stop', handleAiThinkingStop);
       socket.off('ai:error', handleAiError);
-      socket.off('ai:token', handleAiToken);
-      socket.off('ai:complete', handleAiComplete);
 
       if (humanTypingTimeoutRef.current) clearTimeout(humanTypingTimeoutRef.current);
-      if (aiStillWorkingTimerRef.current) clearTimeout(aiStillWorkingTimerRef.current);
     };
   }, [socket, chatId, queryClient]);
 
@@ -273,8 +230,6 @@ const useChatSocket = (socket, chatId) => {
 
   return {
     typingStatus,
-    streamingMessage,
-    aiStillWorking,
     broadcastMessage,
     sendTypingIndicator,
     broadcastRead,

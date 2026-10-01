@@ -53,11 +53,14 @@ export const useSendMessage = () => {
     mutationFn: chatApi.sendMessage,
     onMutate: async (variables) => {
       const { chatId, content, attachments } = variables;
+      const clientMessageId = variables.clientMessageId || crypto.randomUUID();
+      variables.clientMessageId = clientMessageId;
       await queryClient.cancelQueries({ queryKey: ['chats', chatId, 'messages'] });
       const key = ['chats', chatId, 'messages'];
       const previousData = queryClient.getQueryData(key);
       const optimisticMessage = {
-        _id: `optimistic-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        _id: `optimistic-${clientMessageId}`,
+        clientMessageId,
         content,
         attachments: attachments || [],
         senderRole: 'customer',
@@ -104,7 +107,7 @@ export const useSendMessage = () => {
             ...page.data,
             messages: (page.data?.messages || []).map((msg) => {
               if (String(msg._id) === String(confirmed._id)) { alreadyPresent = true; return { ...msg, ...confirmed, isPending: false }; }
-              if (context?.optimisticMessage && msg._id === context.optimisticMessage._id) { replaced = true; return confirmed; }
+              if ((confirmed.clientMessageId && msg.clientMessageId === confirmed.clientMessageId) || (context?.optimisticMessage && msg._id === context.optimisticMessage._id)) { replaced = true; return confirmed; }
               return msg;
             }),
           },
@@ -119,8 +122,24 @@ export const useSendMessage = () => {
       queryClient.invalidateQueries({ queryKey: ['chats', 'admin', 'all'], refetchType: 'none' });
     },
     onError: (error, variables, context) => {
-      if (context?.previousData) queryClient.setQueryData(['chats', variables.chatId, 'messages'], context.previousData);
-      else queryClient.removeQueries({ queryKey: ['chats', variables.chatId, 'messages'], exact: true });
+      const key = ['chats', variables.chatId, 'messages'];
+      queryClient.setQueryData(key, (old) => {
+        if (!old?.pages || !context?.optimisticMessage) return old;
+        return {
+          ...old,
+          pages: old.pages.map((page) => ({
+            ...page,
+            data: {
+              ...page.data,
+              messages: (page.data?.messages || []).map((msg) =>
+                msg._id === context.optimisticMessage._id
+                  ? { ...msg, isPending: false, isFailed: true, sendError: error?.message || 'Failed to send' }
+                  : msg
+              ),
+            },
+          })),
+        };
+      });
     },
   });
 };

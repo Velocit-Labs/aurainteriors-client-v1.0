@@ -67,7 +67,7 @@ const ChatInput = ({ chatId, onTyping }) => {
         }
         const uploadConfig = uploadCacheRef.current.signature;
         const results = await Promise.all(files.map(async (file) => {
-          const result = await uploadToCloudinary(file, uploadConfig, { maxRetries: 3, retryDelay: 1000 });
+          const result = await uploadToCloudinary(file, uploadConfig, { maxRetries: 1, timeoutMs: 8000 });
           return {
             fileName: file.name,
             fileUrl: result.secure_url,
@@ -109,7 +109,6 @@ const ChatInput = ({ chatId, onTyping }) => {
 
   const canSend =
     (message.trim() || selectedFiles.length > 0) &&
-    !sendMessageMutation.isPending &&
     !isUploading;
 
   return (
@@ -202,7 +201,7 @@ const ChatInput = ({ chatId, onTyping }) => {
                 : "text-gray-300 cursor-not-allowed"
             }`}
           >
-            {sendMessageMutation.isPending || isUploading ? (
+            {isUploading ? (
               <div className="h-4 w-4 animate-spin rounded-full border-2 border-gray-300 border-t-[#F27318]" />
             ) : (
               <LucideSendHorizontal className="h-6 w-6" />

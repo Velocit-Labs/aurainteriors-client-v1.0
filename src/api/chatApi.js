@@ -128,9 +128,9 @@ export const getChatMessages = async ({ chatId, page = 1, limit = 50 }) => {
     return response.data;
 };
 
-export const sendMessage = async ({ chatId, content, attachments }) => {
+export const sendMessage = async ({ chatId, content, attachments, clientMessageId }) => {
     // Attachments are now just metadata with Cloudinary URLs (already uploaded)
-    const payload = { content, attachments: attachments || [], ...addGuestSessionId() };
+    const payload = { content, attachments: attachments || [], clientMessageId, ...addGuestSessionId() };
     const response = await api.post(`/chats/${chatId}/messages`, payload);
     return response.data;
 };

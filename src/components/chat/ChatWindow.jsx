@@ -9,7 +9,7 @@ import {
 } from "lucide-react";
 import Skeleton, { ChatMessageSkeleton } from '../common/Skeleton';
 import { motion, AnimatePresence } from 'framer-motion';
-import { useChatMessages, useMarkMessagesRead, useSendMessage } from '../../hooks/chat/useChatTan';
+import { useChatMessages, useMarkMessagesRead } from '../../hooks/chat/useChatTan';
 import useChatSocket from '../../hooks/chat/useChatSocket';
 import useNotificationSocket from '../../hooks/notification/useNotificationSocket';
 import useAuthStore from '../../store/authStore';
@@ -32,34 +32,37 @@ const ChatWindow = ({ chat, onClose, onStartNew, onResetView, isCreatingChat }) 
   } = useChatMessages(chat?._id, { enabled: !!chat });
 
   const markAsReadMutation = useMarkMessagesRead();
-  const sendMessageMutation = useSendMessage();
-  const { typingStatus, streamingMessage, aiStillWorking, sendTypingIndicator, broadcastRead } = useChatSocket(socket, chat?._id);
+  const { typingStatus, sendTypingIndicator, broadcastRead } = useChatSocket(socket, chat?._id);
 
   // Derived message list — must be declared before any useEffect that depends on its length
   const allMessages = messagesData?.pages.flatMap((page) => page.data.messages) || [];
   const messageCount = allMessages.length;
 
-  // CHAT-FIXES-8 Fix 1: Continuous read tracking.
-  // Fire markAsRead whenever new messages arrive while the tab is focused.
+  // Persist read state only when there is actually an unread incoming message.
+  // The previous messageCount effect fired a /read write for the user's own optimistic
+  // sends and duplicated the initial read request, creating avoidable DB contention.
+  const unreadIncomingKey = allMessages
+    .filter((m) => (m.senderRole === 'admin' || m.senderRole === 'bot') && !m.isRead)
+    .map((m) => m._id)
+    .join('|');
+
   useEffect(() => {
-    if (!chat?._id) return;
-    const markReadIfVisible = () => {
-      if (document.visibilityState === 'visible') {
+    if (!chat?._id || !unreadIncomingKey || document.visibilityState !== 'visible') return;
+    markAsReadMutation.mutate(chat._id);
+    broadcastRead();
+  }, [chat?._id, unreadIncomingKey]);
+
+  useEffect(() => {
+    if (!chat?._id) return undefined;
+    const onVisibility = () => {
+      if (document.visibilityState === 'visible' && unreadIncomingKey) {
         markAsReadMutation.mutate(chat._id);
         broadcastRead();
       }
     };
-    markReadIfVisible();
-    document.addEventListener('visibilitychange', markReadIfVisible);
-    return () => document.removeEventListener('visibilitychange', markReadIfVisible);
-  }, [messageCount, chat?._id]);
-
-  useEffect(() => {
-    if (chat?._id && chat?.unreadCountCustomer > 0) {
-      markAsReadMutation.mutate(chat._id);
-      broadcastRead();
-    }
-  }, [chat?._id]);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+  }, [chat?._id, unreadIncomingKey]);
 
   return (
     <div className="flex flex-col h-full bg-white font-dm-sans overflow-hidden">
@@ -106,9 +109,7 @@ const ChatWindow = ({ chat, onClose, onStartNew, onResetView, isCreatingChat }) 
                   hasMore={hasNextPage}
                   isFetchingMore={isFetchingNextPage}
                   currentUserId={user?._id}
-                  streamingMessage={streamingMessage}
                   typingStatus={typingStatus}
-                  aiStillWorking={aiStillWorking}
                 />
               )}
             </div>

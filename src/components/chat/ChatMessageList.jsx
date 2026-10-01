@@ -13,10 +13,8 @@ const ChatMessageList = ({
   hasMore,
   isFetchingMore,
   currentUserId,
-  streamingMessage,
   isAdminView = false,
   typingStatus,
-  aiStillWorking = false,
 }) => {
   const { user } = useAuthStore();
   const messagesEndRef = useRef(null);
@@ -42,7 +40,7 @@ const ChatMessageList = ({
   }, [messages]);
 
   useEffect(() => {
-    const currentCount = messages.length + (streamingMessage ? 1 : 0);
+    const currentCount = messages.length;
     const prevCount = prevContentCountRef.current;
     const isNewContent = currentCount > prevCount;
 
@@ -61,7 +59,7 @@ const ChatMessageList = ({
     }
 
     prevContentCountRef.current = currentCount;
-  }, [messages.length, isFetchingMore, streamingMessage]);
+  }, [messages.length, isFetchingMore]);
 
   useEffect(() => {
     if (typingStatus?.isTyping && isNearBottomRef.current) {
@@ -96,9 +94,11 @@ const ChatMessageList = ({
     }
   }, [isFetchingMore, messages.length]);
 
+  // One progress indicator per AI turn. This is status only; AI content is never
+  // rendered token-by-token. The canonical persisted response still appears once.
   const showTypingBubble = typingStatus?.isTyping && (
-    (isAdminView && (typingStatus.userRole === "customer" || (typingStatus.userRole === "ai" && !streamingMessage))) ||
-    (!isAdminView && (typingStatus.userRole === "admin" || (typingStatus.userRole === "ai" && !streamingMessage)))
+    (isAdminView && typingStatus.userRole === "customer") ||
+    (!isAdminView && ["admin", "ai"].includes(typingStatus.userRole))
   );
 
   if (isLoading) {
@@ -173,34 +173,6 @@ const ChatMessageList = ({
           />
         );
       })}
-
-      {aiStillWorking && !streamingMessage && (
-        <div className="px-4 text-xs text-neutral-500">Assistant response is being reconciled…</div>
-      )}
-
-            {/* FIX 2: Streaming message bubble — renders as tokens arrive, disappears when real message loads */}
-      {streamingMessage && (
-        <div className="flex w-full mb-3 px-1 justify-start">
-          <div className="flex max-w-full gap-3 flex-row items-start">
-            {/* AI avatar top aligned (Fix 1) */}
-            <div className="flex flex-col justify-start pt-[18px] shrink-0">
-              <div className="w-8 h-8 rounded-full bg-purple-50 border border-purple-100 flex items-center justify-center shrink-0">
-                <Sparkles size={14} className="text-purple-500" />
-              </div>
-            </div>
-            {/* Bubble */}
-            <div className="flex flex-col gap-1.5 min-w-0 items-start">
-              <div className="flex items-center gap-2 px-1">
-                <span className="text-[11px] font-bold text-gray-700">Aura Assistant</span>
-              </div>
-              <div className="px-4 py-2.5 rounded-2xl text-[14px] leading-snug shadow-sm w-fit max-w-[85%] sm:max-w-[80%] wrap-break-word whitespace-pre-wrap bg-[#F9F8F6] text-[#1A1714] border border-[#E5E5E5] rounded-tl-none">
-                {streamingMessage}
-                <span className="inline-block w-0.5 h-3.5 bg-[#F27318] ml-0.5 align-middle animate-pulse" />
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
 
       {showTypingBubble && (() => {
         const isAiTyping = typingStatus.userRole === 'ai';
